@@ -1,0 +1,11 @@
+{
+  "task_authority": "docs/NEXT_PROMPT.md",
+  "approval_record": ".agent/authority_approvals.json",
+  "paths": {"current": ".agent/runtime/current", "history": ".agent/runtime/history", "state": ".agent/runtime/state.json"},
+  "role_timeout_seconds": 900,
+  "roles": [
+    {"name": "coordinator", "instruction": ".agent/roles/coordinator.md", "command": ["codex", "exec"], "schema": ".agent/schemas/coordinator.json", "write_capable": false},
+    {"name": "developer", "instruction": ".agent/roles/developer.md", "command": ["codex", "exec"], "schema": ".agent/schemas/developer.json", "write_capable": true},
+    {"name": "reviewer", "instruction": ".agent/roles/reviewer.md", "command": ["codex", "exec"], "schema": ".agent/schemas/reviewer.json", "write_capable": false}
+  ]
+}
