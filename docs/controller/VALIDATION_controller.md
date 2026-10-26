@@ -1,5 +1,35 @@
 # Controller Workflow — Validation
 
+## C1.1 symlink-safe remediation developer evidence
+
+`python -m unittest tests.test_orchestrator_safety` — exit `0`; `Ran 20 tests in 3.322s`; `OK`.
+
+`python -m unittest` — exit `0`; `Ran 0 tests in 0.000s`; `OK` (default discovery finds no tests; the explicit module is the full relevant suite).
+
+`python -m py_compile .agent/orchestrate.py` and `git diff --check` — exit `0`.
+
+`python .agent/orchestrate.py --dry-run` — exit `0`; printed the configured root, authority, role order, and one-cycle default without dispatching a role.
+
+Regression coverage creates external directories and symlinks the requested project's `.agent` and `docs` parents to them. `init --init-git` refuses before any external write, target Git initialization, controller scaffold, or `.gitignore` change. A project-root symlink remains supported by resolving it once to the actual project root.
+
+Independent review recorded `READY`: it reran the controller suite (`20 tests`), the explicit full relevant unittest command, compilation, diff check, and dry-run; it also independently verified `.agent`, `docs`, and `.gitignore` symlink refusal with no external write or target Git initialization. See `REVIEW_REPORT_controller.md`.
+
+## C1.1 developer evidence
+
+`python -m unittest tests.test_orchestrator_safety` — exit `0`; `Ran 18 tests in 3.182s`; `OK`.
+
+`python -m unittest` — exit `0`; `Ran 0 tests in 0.000s`; `OK` (this repository does not use default unittest discovery; the explicit module above is the full relevant suite).
+
+`git diff --check` — exit `0`.
+
+`python -m py_compile .agent/orchestrate.py` — exit `0`.
+
+`python .agent/orchestrate.py --dry-run` — exit `0`; printed the configured root, durable authority, ordered roles, and one-cycle default without dispatching a role.
+
+C1.1 tests use temporary directories and cover new and existing Git targets, explicit Git initialization without a `HEAD`, collision/idempotency refusal, authority path escapes, non-Git refusal, preservation of existing project rules/files and `.gitignore` content, generated configuration/dry-run validity after a user-created baseline, and absence of role or execution-history artifacts during initialization.
+
+Independent review remains pending.
+
 ## C1 final evidence
 
 `python -m py_compile .agent/orchestrate.py` — exit `0`.

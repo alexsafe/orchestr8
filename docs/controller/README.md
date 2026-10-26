@@ -4,6 +4,12 @@ The controller is repository-local orchestration tooling. It does not make produ
 
 ## Initialize or adapt a project
 
+Run `python .agent/orchestrate.py init --project-root /path/to/project --task-authority docs/NEXT_PROMPT.md` from a controller source checkout for an existing Git project. For a new or non-Git directory, add `--init-git`; it runs `git init` only and never creates a commit. The command creates the local config, role instructions and schemas, controller script, neutral authority template, empty approval record, runtime state, runtime ignore entries, and this reference document.
+
+Initialization validates every planned destination and its existing parent components before writing. It refuses a controller target, runtime/history directory, or requested authority that already exists, and rejects internal symlinks rather than traversing them. Authority paths must be project-relative and cannot escape the target root. A project-root symlink is resolved once to its actual root only; all scaffold destinations must remain beneath that root. It preserves `AGENTS.md`, project files, and unrelated `.gitignore` content. It never invokes a role, creates snapshots/history records, changes an existing authority, adds approval, commits, pushes, or accesses a network.
+
+After initialization, configure role commands if necessary, replace the neutral authority through the approval process with a bounded task, create an initial Git commit/`HEAD`, then run `python .agent/orchestrate.py --dry-run`. A Git repository without `HEAD` is valid for initialization but cannot dispatch Developer.
+
 Copy `.agent/controller_config.json` and provide project-relative paths for one human-visible `task_authority`, auditable `approval_record`, and a dedicated runtime root containing `current`, immutable `history`, and `state`. The controller excludes only that configured runtime root from the pre-dispatch Git-clean check and baseline manifest, so its own outputs cannot be mistaken for user work. Paths escaping the configured project root are rejected.
 
 Initialize `state` with at least `{"iteration": 0, "status": "READY"}`. Do not copy a previous project's current or history directory. C1 accepts only the configured list order Coordinator → Developer → Reviewer; any other order is rejected because Developer requires the immutable task snapshot and Reviewer requires Developer evidence. Their instruction assets, commands, schemas, paths, timeout, and read/write behavior are project-configured. It does not support arbitrary role graphs.

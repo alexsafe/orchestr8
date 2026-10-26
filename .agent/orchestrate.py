@@ -7,6 +7,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / ".agent" / "controller_config.json"
+INIT_ASSETS = (
+    ".agent/orchestrate.py", ".agent/roles/coordinator.md", ".agent/roles/developer.md",
+    ".agent/roles/reviewer.md", ".agent/schemas/coordinator.json", ".agent/schemas/developer.json",
+    ".agent/schemas/reviewer.json", "docs/controller/README.md",
+)
+INIT_CONFIG = {
+    "approval_record": ".agent/authority_approvals.json",
+    "paths": {"current": ".agent/runtime/current", "history": ".agent/runtime/history", "state": ".agent/runtime/state.json"},
+    "role_timeout_seconds": 900,
+    "roles": [
+        {"name": "coordinator", "instruction": ".agent/roles/coordinator.md", "command": ["codex", "exec"], "schema": ".agent/schemas/coordinator.json", "write_capable": False},
+        {"name": "developer", "instruction": ".agent/roles/developer.md", "command": ["codex", "exec"], "schema": ".agent/schemas/developer.json", "write_capable": True},
+        {"name": "reviewer", "instruction": ".agent/roles/reviewer.md", "command": ["codex", "exec"], "schema": ".agent/schemas/reviewer.json", "write_capable": False},
+    ],
+}
+NEUTRAL_AUTHORITY = "# Current Task Authority\n\nNo Developer task is currently authorized.\n\nBefore running a write-capable cycle, replace this document through the project's explicit approval process with one bounded task, acceptance criteria, validation commands, and stop conditions.\n"
+RUNTIME_IGNORES = (".agent/runtime/", ".agent/orchestrate.lock")
 HUMAN_STOP_CATEGORIES = ("unresolved_requirement", "material_policy_or_provider_decision", "scope_expansion", "failed_or_incomplete_validation", "unsafe_or_unexpected_diff", "remote_or_external_action", "stale_or_mismatched_task_state", "indeterminate_write_invocation")
 
 
@@ -24,6 +41,76 @@ def project_path(root: Path, value: str) -> Path:
     path = (root / value).resolve()
     if root.resolve() not in path.parents and path != root.resolve(): raise RuntimeError("configured path escapes project root")
     return path
+
+
+def init_authority_path(root: Path, value: str) -> Path:
+    candidate = Path(value)
+    if not value or candidate.is_absolute() or candidate == Path(".") or ".." in candidate.parts:
+        raise RuntimeError("--task-authority must be a non-empty project-relative file path")
+    path = root / candidate
+    if path == root or path.suffix == "":
+        raise RuntimeError("--task-authority must name a file")
+    return path
+
+
+def is_git_repository(root: Path) -> bool:
+    result = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=root, text=True, capture_output=True)
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def path_exists(path: Path) -> bool:
+    return os.path.lexists(path)
+
+
+def preflight_init_destinations(root: Path, destinations: list[Path]) -> None:
+    for destination in destinations:
+        try: relative = destination.relative_to(root)
+        except ValueError as error: raise RuntimeError("initialization destination escapes project root") from error
+        current = root
+        for component in relative.parts:
+            current /= component
+            if current.is_symlink():
+                raise RuntimeError("initialization refuses symlinked destination component: " + str(current.relative_to(root)))
+
+
+def init_project(project_root: str, authority_value: str, init_git: bool) -> int:
+    root = Path(project_root).expanduser().resolve()
+    if root.exists() and not root.is_dir():
+        raise RuntimeError("--project-root must be a directory")
+    authority = init_authority_path(root, authority_value)
+    targets = [root / ".agent/controller_config.json", root / ".agent/authority_approvals.json", root / ".agent/runtime", authority]
+    targets.extend(root / item for item in INIT_ASSETS)
+    destinations = [*targets, root / ".gitignore", root / ".git"]
+    preflight_init_destinations(root, destinations)
+    conflicts = [path for path in targets if path_exists(path)]
+    if conflicts:
+        raise RuntimeError("initialization refuses existing controller target: " + str(conflicts[0].relative_to(root)))
+    if root.exists() and not is_git_repository(root) and not init_git:
+        raise RuntimeError("project is not a Git repository; rerun with --init-git to initialize Git without a commit")
+    if not root.exists():
+        if not init_git:
+            raise RuntimeError("new project directory requires --init-git")
+        root.mkdir(parents=True)
+    if not is_git_repository(root):
+        result = subprocess.run(["git", "init"], cwd=root, text=True, capture_output=True)
+        if result.returncode:
+            raise RuntimeError("Git initialization failed: " + result.stderr.strip())
+    config = dict(INIT_CONFIG); config["task_authority"] = authority_value
+    write_json(root / ".agent/controller_config.json", config)
+    write_json(root / ".agent/authority_approvals.json", {"approvals": []})
+    write_json(root / ".agent/runtime/state.json", {"iteration": 0, "status": "READY"})
+    authority.parent.mkdir(parents=True, exist_ok=True); authority.write_text(NEUTRAL_AUTHORITY, encoding="utf-8")
+    for relative in INIT_ASSETS:
+        destination = root / relative; destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    ignore = root / ".gitignore"; existing = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
+    missing = [entry for entry in RUNTIME_IGNORES if entry not in existing.splitlines()]
+    if missing:
+        suffix = "" if not existing or existing.endswith("\n") else "\n"
+        ignore.write_text(existing + suffix + "\n".join(missing) + "\n", encoding="utf-8")
+    print("Initialized local controller scaffolding in " + str(root))
+    print("Next: configure role commands if needed; authorize a bounded task in " + authority_value + "; create an initial Git commit/HEAD; then run python .agent/orchestrate.py --dry-run.")
+    return 0
 
 
 def load_config(path: Path | None = None) -> tuple[dict, Path]:
@@ -150,7 +237,14 @@ def report(title: str, value: dict) -> str: return f"# {title}\n\n```json\n{json
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--multi-cycle", action="store_true"); parser.add_argument("--max-iterations", type=int); parser.add_argument("--resume", action="store_true"); parser.add_argument("--dry-run", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    subcommands = parser.add_subparsers(dest="command")
+    init = subcommands.add_parser("init", help="create a non-executing project-local controller scaffold")
+    init.add_argument("--project-root", required=True)
+    init.add_argument("--task-authority", required=True)
+    init.add_argument("--init-git", action="store_true", help="initialize Git when the target is not already a repository; never commits")
+    parser.add_argument("--multi-cycle", action="store_true"); parser.add_argument("--max-iterations", type=int); parser.add_argument("--resume", action="store_true"); parser.add_argument("--dry-run", action="store_true"); args = parser.parse_args()
+    if args.command == "init": return init_project(args.project_root, args.task_authority, args.init_git)
     if args.max_iterations is not None and not args.multi_cycle: parser.error("--max-iterations requires --multi-cycle")
     config, root = load_config(); authority, approval_record, current, history, state_path = locations(root, config); approval_entries(approval_record); state = json.loads(state_path.read_text())
     if state.get("config_sha256") not in (None, config["_sha256"]): raise RuntimeError("saved state belongs to a different controller configuration")

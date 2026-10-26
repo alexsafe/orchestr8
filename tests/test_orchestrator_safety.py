@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -186,6 +187,88 @@ class OrchestratorSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "role order"): ORCHESTRATOR.load_config()
         self.tearDown(); self.setUp(); self.run_controller(); self.run_controller("--multi-cycle", "--max-iterations", "2")
         self.assertEqual(self.state()["iteration"], 3)
+
+
+class InitializationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.script = ROOT / ".agent" / "orchestrate.py"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def run_init(self, project: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(project), "--task-authority", "docs/NEXT_PROMPT.md", *args], text=True, capture_output=True)
+
+    def test_new_project_requires_explicit_git_and_has_no_head(self) -> None:
+        project = self.root / "new"
+        refused = self.run_init(project)
+        self.assertNotEqual(refused.returncode, 0); self.assertFalse(project.exists())
+        result = self.run_init(project, "--init-git")
+        self.assertEqual(result.returncode, 0, result.stderr); self.assertIn("create an initial Git commit/HEAD", result.stdout)
+        self.assertTrue((project / ".git").is_dir())
+        self.assertNotEqual(subprocess.run(["git", "rev-parse", "HEAD"], cwd=project, capture_output=True).returncode, 0)
+        self.assertEqual(json.loads((project / ".agent/controller_config.json").read_text())["task_authority"], "docs/NEXT_PROMPT.md")
+        self.assertEqual(json.loads((project / ".agent/authority_approvals.json").read_text()), {"approvals": []})
+        self.assertIn("No Developer task is currently authorized.", (project / "docs/NEXT_PROMPT.md").read_text())
+        self.assertTrue((project / ".agent/runtime/state.json").is_file())
+        self.assertFalse((project / ".agent/runtime/current").exists()); self.assertFalse((project / ".agent/runtime/history").exists())
+
+    def test_existing_git_project_preserves_files_and_supports_dry_run_after_baseline(self) -> None:
+        project = self.root / "existing"; project.mkdir()
+        (project / "AGENTS.md").write_text("keep rules\n"); (project / ".gitignore").write_text("build/\n"); (project / "product.txt").write_text("keep\n")
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+        result = self.run_init(project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((project / "AGENTS.md").read_text(), "keep rules\n"); self.assertEqual((project / "product.txt").read_text(), "keep\n")
+        self.assertIn("build/", (project / ".gitignore").read_text()); self.assertIn(".agent/runtime/", (project / ".gitignore").read_text())
+        subprocess.run(["git", "add", "."], cwd=project, check=True)
+        subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "baseline"], cwd=project, check=True)
+        dry_run = subprocess.run([sys.executable, str(project / ".agent/orchestrate.py"), "--dry-run"], cwd=project, text=True, capture_output=True)
+        self.assertEqual(dry_run.returncode, 0, dry_run.stderr); self.assertIn('"task_authority": "docs/NEXT_PROMPT.md"', dry_run.stdout)
+
+    def test_refuses_conflicts_path_escapes_and_non_git_projects(self) -> None:
+        project = self.root / "conflict"; project.mkdir(); (project / ".agent/runtime/history").mkdir(parents=True)
+        refused = self.run_init(project, "--init-git")
+        self.assertNotEqual(refused.returncode, 0); self.assertTrue((project / ".agent/runtime/history").is_dir())
+        other = self.root / "other"; other.mkdir()
+        escape = subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(other), "--task-authority", "../escape.md", "--init-git"], text=True, capture_output=True)
+        self.assertNotEqual(escape.returncode, 0); self.assertFalse((self.root / "escape.md").exists())
+        missing = subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(other), "--init-git"], text=True, capture_output=True)
+        self.assertNotEqual(missing.returncode, 0); self.assertIn("--task-authority", missing.stderr)
+        invalid = subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(other), "--task-authority", "docs", "--init-git"], text=True, capture_output=True)
+        self.assertNotEqual(invalid.returncode, 0); self.assertFalse((other / ".git").exists())
+        nongit = self.root / "nongit"; nongit.mkdir(); (nongit / "file").write_text("keep")
+        refused = self.run_init(nongit)
+        self.assertNotEqual(refused.returncode, 0); self.assertEqual((nongit / "file").read_text(), "keep")
+
+    def test_idempotent_refusal_has_no_role_or_execution_artifacts(self) -> None:
+        project = self.root / "idempotent"; self.assertEqual(self.run_init(project, "--init-git").returncode, 0)
+        again = self.run_init(project)
+        self.assertNotEqual(again.returncode, 0); self.assertIn("refuses existing controller target", again.stderr)
+        self.assertFalse((project / ".agent/runtime/current").exists()); self.assertFalse((project / ".agent/runtime/history").exists())
+        self.assertFalse((project / ".agent/runtime/calls").exists())
+
+    def test_symlinked_scaffold_parents_refuse_before_any_write_or_git_initialization(self) -> None:
+        for parent in (".agent", "docs"):
+            with self.subTest(parent=parent):
+                project, external = self.root / parent.replace(".", "dot"), self.root / f"{parent.replace('.', 'dot')}-external"
+                project.mkdir(); external.mkdir(); (project / ".gitignore").write_text("keep\n")
+                os.symlink(external, project / parent)
+                result = self.run_init(project, "--init-git")
+                self.assertNotEqual(result.returncode, 0); self.assertIn("symlinked", result.stderr)
+                self.assertEqual(list(external.iterdir()), [])
+                self.assertFalse((project / ".git").exists()); self.assertFalse((project / ".agent/controller_config.json").exists())
+                self.assertEqual((project / ".gitignore").read_text(), "keep\n")
+
+    def test_project_root_symlink_is_resolved_once_and_scaffolds_actual_root(self) -> None:
+        actual, alias = self.root / "actual", self.root / "alias"
+        actual.mkdir(); os.symlink(actual, alias)
+        result = self.run_init(alias, "--init-git")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((actual / ".agent/controller_config.json").is_file())
+        self.assertTrue((actual / ".git").is_dir())
 
 
 if __name__ == "__main__": unittest.main()
