@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestr8"
+version = "0.1.0"
+description = "Local supervised Coordinator, Developer, Reviewer workflow controller"
+requires-python = ">=3.11"
+dependencies = ["iterm2>=2.7"]
+
+[project.scripts]
+orchestr8 = "orchestr8:main"
+
+[tool.setuptools]
+py-modules = ["orchestr8"]

@@ -2,7 +2,7 @@
 
 ## Current objective
 
-C1 and C1.1 are accepted. C1.1 independently verified safe project scaffolding, including no-write symlink preflight for internal scaffold parents. No write-capable controller cycle is authorized until a new task is explicitly approved.
+C1.2.13 and C1.2.13.1 are accepted. Alex's isolated-venv native iTerm2 one-tab probe passed on 2026-10-29: one titled native tab was created and no supervised state existed. C1.2.14 validates only three native default-profile titled tabs before any Codex bootstrap design. Full three-role tabs remain intentionally fail-closed. C2/C3 remain deferred.
 
 ## Deferred scope
 

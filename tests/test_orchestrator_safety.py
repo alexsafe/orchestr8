@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import builtins
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -54,8 +58,8 @@ class OrchestratorSafetyTests(unittest.TestCase):
         paths = paths or {"current": ".runtime/current", "history": ".runtime/history", "state": ".runtime/state.json"}
         roles = []
         for name, writable in (("coordinator", False), ("developer", True), ("reviewer", False)):
-            roles.append({"name": name, "instruction": f"assets/{name}.md", "command": [sys.executable, str(self.fake)], "schema": f"contracts/{name}.json", "write_capable": writable})
-        self.write_json(self.agent / "controller.json", {"task_authority": "tasks/authority.md", "approval_record": "approvals.json", "paths": paths, "role_timeout_seconds": timeout, "roles": roles})
+            roles.append({"name": name, "instruction": f"assets/{name}.md", "command": [sys.executable, str(self.fake)], "session_command": ["fake-session", name], "schema": f"contracts/{name}.json", "write_capable": writable})
+        self.write_json(self.agent / "controller.json", {"tab_host":"iterm2", "task_authority": "tasks/authority.md", "approval_record": "approvals.json", "paths": paths, "role_timeout_seconds": timeout, "roles": roles})
         self.write_json(self.root / paths["state"], {"iteration": 0, "max_iterations": 5, "status": "READY"})
 
     def locations(self):
@@ -188,6 +192,205 @@ class OrchestratorSafetyTests(unittest.TestCase):
         self.tearDown(); self.setUp(); self.run_controller(); self.run_controller("--multi-cycle", "--max-iterations", "2")
         self.assertEqual(self.state()["iteration"], 3)
 
+    def test_supervised_role_parsing_tabs_and_handoff_artifacts(self) -> None:
+        self.assertEqual(ORCHESTRATOR.parse_roles("coord,dev,review"), ["coordinator", "developer", "reviewer"])
+        for value in ("developer,coordinator,reviewer", "coord,dev,dev", "coord,unknown,review"):
+            with self.assertRaises(RuntimeError): ORCHESTRATOR.parse_roles(value)
+        config, root, (authority, approval, current, history, state_path) = self.locations(); launched = []
+        ORCHESTRATOR.supervised_init(root, config, current, True, launched.append)
+        self.assertEqual([item["role"] for item in launched], ["coordinator", "developer", "reviewer"])
+        self.assertEqual(launched[0]["cwd"], str(root)); self.assertEqual([item["sandbox"] for item in launched], ["read-only", "workspace-write", "read-only"]); self.assertFalse((current / "calls").exists())
+        self.write_json(current / ".coordinator.json", {"status":"CONTINUE","summary":"go","next_prompt":None,"human_reason":None,"human_category":None})
+        ORCHESTRATOR.supervised_accept(root, config, authority, approval, current, history, state_path, "coordinator")
+        session = json.loads((current / "supervised_session.json").read_text()); self.assertEqual(session["phase"], "developer")
+        self.write_json(current / ".developer.json", {"status":"DONE","summary":"done","files_changed":[],"validation":[],"known_issues":[],"commit_or_diff_reference":None,"human_category":None})
+        ORCHESTRATOR.supervised_accept(root, config, authority, approval, current, history, state_path, "developer")
+        self.assertIn(session["task_snapshot_sha256"], (current / "task_snapshot.json").read_text()); self.assertTrue((current / "dev_report.md").is_file())
+        self.write_json(current / ".reviewer.json", {"verdict":"APPROVED","summary":"ok","findings":[],"evidence":[],"human_reason":None,"human_category":None})
+        ORCHESTRATOR.supervised_accept(root, config, authority, approval, current, history, state_path, "reviewer")
+        self.assertTrue((current / "review_report.md").is_file()); self.assertTrue((history / "001" / "review_report.md").is_file())
+        self.assertEqual(json.loads((current / "supervised_session.json").read_text())["phase"], "coordinator_review")
+
+    def test_supervised_tab_launch_failure_creates_no_runtime_state(self) -> None:
+        config, root, (_, _, current, _, _) = self.locations()
+        def fail(_: dict) -> None: raise RuntimeError("fake launcher failed")
+        with self.assertRaisesRegex(RuntimeError, "stopped safely"): ORCHESTRATOR.supervised_init(root, config, current, True, fail)
+        self.assertFalse(current.exists())
+
+    def test_iterm_tab_applescript_uses_fake_runner_and_unicode_safe_source(self) -> None:
+        spec = {
+            "role": "reviewer", "title": 'ORCHESTR8 · Reviewer · quote "title"',
+            "cwd": '/tmp/project · with "quotes"',
+            "instruction": '/tmp/role · "reviewer".md',
+            "command": ['fake session', '--profile=unit test', 'quote"argument'],
+            "sandbox": "read-only",
+        }
+        calls = []
+        def fake_osascript(arguments, **kwargs):
+            calls.append((arguments, kwargs)); return subprocess.CompletedProcess(arguments, 0, "", "")
+        spec["host"] = "iterm2"; ORCHESTRATOR.launch_iterm_tab(spec, fake_osascript, platform="darwin")
+        self.assertEqual(len(calls), 1)
+        arguments, kwargs = calls[0]; self.assertEqual(arguments[:2], ["osascript", "-e"])
+        self.assertEqual(kwargs, {"text": True, "capture_output": True})
+        source = arguments[2]
+        self.assertIn('ORCHESTR8 · Reviewer', source); self.assertNotIn(r"\u00b7", source)
+        self.assertIn('\'fake session\' \'--profile=unit test\' \'quote\\"argument\'', source)
+        self.assertIn('\\"quotes\\"', source); self.assertIn('\\"reviewer\\"', source)
+        self.assertIn(" -C ", source); self.assertIn(" -s read-only ", source)
+        self.assertNotIn("--skip-git-repo-check", source)
+        self.assertIn('tell application "iTerm2"', source); self.assertIn("set targetWindow to front window", source)
+        self.assertIn("create tab with default profile command", source); self.assertIn("tell targetWindow", source)
+        self.assertIn("set tabCountBefore to count of tabs", source)
+        self.assertIn("repeat 10 times", source); self.assertIn("delay 0.1", source)
+        self.assertIn("readinessStartedAt to current date", source); self.assertIn("elapsed_seconds=", source)
+        self.assertIn("iTerm2 tab readiness failed pre_count=", source); self.assertIn("close partial probe tabs", source)
+        bootstrap = ORCHESTRATOR.interactive_session_command(spec)
+        self.assertIn("printf '\\033]0;%s\\007' 'ORCHESTR8 · Reviewer · quote \"title\"'", bootstrap)
+        self.assertIn("launch_status=$?", bootstrap); self.assertIn("inspection shell remains open", bootstrap)
+        self.assertNotIn("launchedTab", source); self.assertNotIn("current session of launchedTab", source); self.assertNotIn("title of launchedTab", source)
+        self.assertNotIn("Terminal", source); self.assertNotIn("do script", source); self.assertNotIn("move launchedTab", source)
+        self.assertNotIn("selected tab of front window", source)
+
+    def test_unsupported_tab_host_fails_closed_before_runtime_state(self) -> None:
+        config, root, (_, _, current, _, _) = self.locations(); config["tab_host"] = "terminal"
+        with self.assertRaisesRegex(RuntimeError, "full --tabs launch is unavailable"):
+            ORCHESTRATOR.supervised_init(root, config, current, True)
+        self.assertFalse(current.exists())
+
+    def test_iterm_launch_failure_creates_no_supervised_runtime_state(self) -> None:
+        config, root, (_, _, current, _, _) = self.locations(); calls = []
+        def failed_osascript(arguments, **kwargs):
+            calls.append((arguments, kwargs)); return subprocess.CompletedProcess(arguments, 1, "", "iTerm2 unavailable")
+        def launcher(spec): ORCHESTRATOR.launch_iterm_tab(spec, failed_osascript, platform="darwin")
+        with self.assertRaisesRegex(RuntimeError, "stopped safely.*iTerm2 tab launch failed"):
+            ORCHESTRATOR.supervised_init(root, config, current, True, launcher)
+        self.assertEqual(len(calls), 1); self.assertFalse(current.exists())
+
+    def test_later_iterm_launch_failure_leaves_no_supervised_runtime_state(self) -> None:
+        config, root, (_, _, current, _, _) = self.locations(); launched = []
+        def launcher(spec):
+            launched.append(spec["role"])
+            if spec["role"] == "developer": raise RuntimeError("iTerm2 tab confirmation failed")
+        with self.assertRaisesRegex(RuntimeError, "stopped safely.*confirmation failed"):
+            ORCHESTRATOR.supervised_init(root, config, current, True, launcher)
+        self.assertEqual(launched, ["coordinator", "developer"]); self.assertFalse(current.exists())
+
+    def test_tabs_probe_creates_one_non_role_tab_without_supervised_state(self) -> None:
+        config, root, (_, _, current, _, _) = self.locations(); launched = []
+        ORCHESTRATOR.supervised_init(root, config, current, True, launched.append, tabs_probe=True)
+        self.assertEqual(len(launched), 1); spec = launched[0]
+        self.assertEqual(spec["title"], "ORCHESTR8 · Host probe"); self.assertTrue(spec["probe"]); self.assertEqual(spec["command"], [])
+        command = ORCHESTRATOR.interactive_session_command(spec)
+        self.assertIn("No role or workflow was started.", command); self.assertIn("command -v codex", command)
+        self.assertFalse(current.exists())
+
+    def test_native_probe_bridge_validates_success_and_failures(self) -> None:
+        spec = {"host":"iterm2", "probe":True, "title":"ORCHESTR8 · Host probe", "cwd":"/tmp/probe", "instruction":"", "command":[], "sandbox":"read-only"}
+        calls = []
+        def success(arguments, **kwargs):
+            calls.append((arguments, kwargs)); return subprocess.CompletedProcess(arguments, 0, '{"ok":true,"host":"iterm2","window":"w","tab":"t","session":"s","elapsed_seconds":0.1,"reason":"confirmed"}', "")
+        result = ORCHESTRATOR.launch_iterm_probe(spec, success)
+        self.assertEqual(result["tab"], "t"); self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0][1]["input"]), {"title":"ORCHESTR8 · Host probe", "mode":"default_profile_tab_only"})
+        for completed, message in ((subprocess.CompletedProcess([], 0, "not-json", ""), "malformed diagnostics"), (subprocess.CompletedProcess([], 0, '{"ok":false,"reason":"API disabled"}', ""), "API disabled"), (subprocess.CompletedProcess([], 1, "", "bridge failed"), "native iTerm2 probe failed")):
+            with self.subTest(message=message):
+                def fake(*_args, response=completed, **_kwargs): return response
+                with self.assertRaisesRegex(RuntimeError, message): ORCHESTRATOR.launch_iterm_probe(spec, fake)
+
+    def test_native_probe_module_uses_default_tab_and_structured_failures(self) -> None:
+        bridge = ROOT / ".agent" / "iterm_probe.py"
+        def run(fake_iterm, request='{ "title": "ORCHESTR8 · Host probe" }'):
+            original_module, original_stdin = sys.modules.get("iterm2"), sys.stdin; output = io.StringIO()
+            sys.modules["iterm2"] = fake_iterm; sys.stdin = io.StringIO(request)
+            try:
+                with contextlib.redirect_stdout(output): exec(compile(bridge.read_text(), str(bridge), "exec"), {"__name__":"__main__"})
+            finally:
+                sys.stdin = original_stdin
+                if original_module is None: del sys.modules["iterm2"]
+                else: sys.modules["iterm2"] = original_module
+            return json.loads(output.getvalue())
+        class Tab:
+            tab_id = "tab"; titled = None
+            async def async_set_title(self, title): self.titled = title
+        class Window:
+            window_id = "window"
+            async def async_create_tab(self): return tab
+        tab = Tab(); window = Window()
+        async def get_app(_): return types.SimpleNamespace(current_terminal_window=window)
+        def complete(main): return __import__("asyncio").run(main(None))
+        fake = types.SimpleNamespace(async_get_app=get_app, run_until_complete=complete)
+        success = run(fake); self.assertTrue(success["ok"]); self.assertEqual(tab.titled, "ORCHESTR8 · Host probe")
+        window.async_create_tab = lambda: (_ for _ in ()).throw(RuntimeError("unused"))
+        async def none(): return None
+        window.async_create_tab = none; self.assertIn("closed immediately", run(fake)["reason"])
+        class BrokenTab(Tab):
+            async def async_set_title(self, title): raise RuntimeError("title failed")
+        async def broken_create(): return BrokenTab()
+        window.async_create_tab = broken_create; self.assertIn("title failed", run(fake)["reason"])
+        self.assertIn("malformed native probe request", run(fake, "{")["reason"])
+        original_import, original_stdin = builtins.__import__, sys.stdin
+        def missing_iterm2(name, *args, **kwargs):
+            if name == "iterm2": raise ImportError("fake missing module")
+            return original_import(name, *args, **kwargs)
+        output = io.StringIO(); builtins.__import__ = missing_iterm2; sys.stdin = io.StringIO('{"title":"ORCHESTR8 · Host probe"}')
+        try:
+            with contextlib.redirect_stdout(output): exec(compile(bridge.read_text(), str(bridge), "exec"), {"__name__":"__main__"})
+        finally:
+            builtins.__import__ = original_import; sys.stdin = original_stdin
+        self.assertIn("module unavailable", json.loads(output.getvalue())["reason"])
+
+    def test_role_contracts_are_isolated_and_have_non_overlapping_outputs(self) -> None:
+        instructions = {name: (ROOT / ".agent" / "roles" / f"{name}.md").read_text() for name in ("coordinator", "developer", "reviewer")}
+        outputs = {name: f".agent/runtime/current/.{name}.json" for name in instructions}
+        self.assertIn("Common task", instructions["coordinator"]); self.assertIn("Coordinator work", instructions["coordinator"])
+        self.assertIn("Common task", instructions["developer"]); self.assertIn("Developer work", instructions["developer"]); self.assertIn("Reviewer handoff", instructions["developer"])
+        self.assertIn("Common task", instructions["reviewer"]); self.assertIn("Reviewer handoff", instructions["reviewer"]); self.assertIn("Developer work", instructions["reviewer"])
+        for name, instruction in instructions.items():
+            self.assertIn(outputs[name], instruction)
+            for other, output in outputs.items():
+                if other != name: self.assertNotIn(output, instruction)
+
+    def test_supervised_accept_uses_c1_baseline_and_structured_stops(self) -> None:
+        config, root, (authority, approval, current, history, state_path) = self.locations(); ORCHESTRATOR.clean_baseline = self.old_clean
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True); subprocess.run(["git", "add", "."], cwd=root, check=True); subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "base"], cwd=root, check=True)
+        ORCHESTRATOR.supervised_init(root, config, current, True, lambda _: None)
+        self.write_json(current / ".coordinator.json", {"status":"CONTINUE","summary":"go","next_prompt":None,"human_reason":None,"human_category":None})
+        (root / "dirty").write_text("x")
+        self.assertEqual(ORCHESTRATOR.supervised_accept(root, config, authority, approval, current, history, state_path, "coordinator"), 0)
+        self.assert_stop("failed_or_incomplete_validation")
+        self.tearDown(); self.setUp(); config, root, (authority, approval, current, history, state_path) = self.locations(); ORCHESTRATOR.clean_baseline = self.old_clean
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True); subprocess.run(["git", "add", "."], cwd=root, check=True); subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "base"], cwd=root, check=True); subprocess.run(["git", "update-ref", "-d", "HEAD"], cwd=root, check=True)
+        ORCHESTRATOR.supervised_init(root, config, current, True, lambda _: None); self.write_json(current / ".coordinator.json", {"status":"CONTINUE","summary":"go","next_prompt":None,"human_reason":None,"human_category":None})
+        self.assertEqual(ORCHESTRATOR.supervised_accept(root, config, authority, approval, current, history, state_path, "coordinator"), 0); self.assert_stop("failed_or_incomplete_validation")
+
+    def test_supervised_cycle_refuses_invalid_artifact_preconditions(self) -> None:
+        config, root, (authority, _, current, history, state_path) = self.locations(); ORCHESTRATOR.supervised_init(root, config, current, True, lambda _: None)
+        self.write_json(session_path := current / "supervised_session.json", {"phase":"reviewer", "state":"WAITING_FOR_HUMAN", "task_snapshot_sha256":"missing"})
+        self.assertEqual(ORCHESTRATOR.supervised_cycle(root, config, authority, current, history, state_path), 0)
+        self.assert_stop("stale_or_mismatched_task_state")
+
+    def test_supervised_session_malformed_states_stop_for_accept_cycle_and_views(self) -> None:
+        cases = (("accept", ["developer"]), ("cycle", {"phase": None}), ("status", {"phase": "unknown"}), ("preview", {"phase": ["reviewer"]}), ("resume", "{bad"))
+        for command, payload in cases:
+            with self.subTest(command=command):
+                config, root, (authority, approval, current, history, state_path) = self.locations(); current.mkdir(parents=True)
+                if isinstance(payload, str): (current / "supervised_session.json").write_text(payload)
+                else: self.write_json(current / "supervised_session.json", payload)
+                if command == "accept": result = ORCHESTRATOR.supervised_accept(root, config, authority, approval, current, history, state_path, "developer")
+                elif command == "cycle": result = ORCHESTRATOR.supervised_cycle(root, config, authority, current, history, state_path)
+                else: result = ORCHESTRATOR.supervised_view(root, config, current, history, state_path, command)
+                self.assertEqual(result, 0); self.assert_stop("stale_or_mismatched_task_state")
+                archived = history / "001" / "supervised_session.json"; self.assertTrue(archived.is_file()); self.assertFalse((current / "calls").exists())
+                self.tearDown(); self.setUp()
+        config, root, (_, _, current, history, state_path) = self.locations()
+        self.assertEqual(ORCHESTRATOR.supervised_view(root, config, current, history, state_path, "status"), 0)
+        self.assert_stop("stale_or_mismatched_task_state")
+
+    def test_supervised_phrase_contract_matches_each_displayed_phase(self) -> None:
+        expected = {"coordinator_initial": "Start project: <human initial brief>", "developer": "do next prompt", "reviewer": "review latest", "coordinator_review": "coordinate latest"}
+        self.assertEqual(ORCHESTRATOR.ROLE_PHRASES, expected)
+        for phase, phrase in expected.items(): self.assertEqual(ORCHESTRATOR.next_action(phase).split(": ", 1)[1], phrase)
+
 
 class InitializationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -235,10 +438,11 @@ class InitializationTests(unittest.TestCase):
         other = self.root / "other"; other.mkdir()
         escape = subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(other), "--task-authority", "../escape.md", "--init-git"], text=True, capture_output=True)
         self.assertNotEqual(escape.returncode, 0); self.assertFalse((self.root / "escape.md").exists())
-        missing = subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(other), "--init-git"], text=True, capture_output=True)
-        self.assertNotEqual(missing.returncode, 0); self.assertIn("--task-authority", missing.stderr)
         invalid = subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(other), "--task-authority", "docs", "--init-git"], text=True, capture_output=True)
         self.assertNotEqual(invalid.returncode, 0); self.assertFalse((other / ".git").exists())
+        defaults = self.root / "defaults"
+        default_init = subprocess.run([sys.executable, str(self.script), "init", "--project-root", str(defaults), "--init-git"], text=True, capture_output=True)
+        self.assertEqual(default_init.returncode, 0, default_init.stderr); self.assertTrue((defaults / "docs/NEXT_PROMPT.md").is_file())
         nongit = self.root / "nongit"; nongit.mkdir(); (nongit / "file").write_text("keep")
         refused = self.run_init(nongit)
         self.assertNotEqual(refused.returncode, 0); self.assertEqual((nongit / "file").read_text(), "keep")
@@ -269,6 +473,24 @@ class InitializationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((actual / ".agent/controller_config.json").is_file())
         self.assertTrue((actual / ".git").is_dir())
+
+    def test_console_entrypoint_uses_target_cwd_for_init_defaults_and_preview(self) -> None:
+        project = self.root / "console-project"
+        project.mkdir()
+        init = subprocess.run([sys.executable, str(ROOT / "orchestr8.py"), "init", "--init-git"], cwd=project, text=True, capture_output=True)
+        self.assertEqual(init.returncode, 0, init.stderr)
+        preview = subprocess.run([sys.executable, str(ROOT / "orchestr8.py"), "preview"], cwd=project, text=True, capture_output=True)
+        self.assertEqual(preview.returncode, 0, preview.stderr); self.assertTrue((project / ".agent/runtime/history/001/human_stop.json").is_file())
+
+    def test_tabs_cli_help_names_iterm2_and_not_terminal(self) -> None:
+        result = subprocess.run([sys.executable, str(self.script), "init", "--help"], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("supervised iTerm2 role tabs", result.stdout)
+        self.assertNotIn("Terminal role tabs", result.stdout)
+
+    def test_tabs_probe_requires_tabs(self) -> None:
+        result = subprocess.run([sys.executable, str(self.script), "init", "--init-git", "--tabs-probe"], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0); self.assertIn("--tabs-probe requires --tabs", result.stderr)
 
 
 if __name__ == "__main__": unittest.main()

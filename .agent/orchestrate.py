@@ -2,7 +2,7 @@
 """Fail-closed, project-configured Coordinator → Developer → Reviewer controller."""
 from __future__ import annotations
 
-import argparse, hashlib, json, os, shutil, subprocess, sys
+import argparse, hashlib, json, os, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,22 +13,214 @@ INIT_ASSETS = (
     ".agent/schemas/reviewer.json", "docs/controller/README.md",
 )
 INIT_CONFIG = {
+    "tab_host": "iterm2",
     "approval_record": ".agent/authority_approvals.json",
     "paths": {"current": ".agent/runtime/current", "history": ".agent/runtime/history", "state": ".agent/runtime/state.json"},
     "role_timeout_seconds": 900,
     "roles": [
-        {"name": "coordinator", "instruction": ".agent/roles/coordinator.md", "command": ["codex", "exec"], "schema": ".agent/schemas/coordinator.json", "write_capable": False},
-        {"name": "developer", "instruction": ".agent/roles/developer.md", "command": ["codex", "exec"], "schema": ".agent/schemas/developer.json", "write_capable": True},
-        {"name": "reviewer", "instruction": ".agent/roles/reviewer.md", "command": ["codex", "exec"], "schema": ".agent/schemas/reviewer.json", "write_capable": False},
+        {"name": "coordinator", "instruction": ".agent/roles/coordinator.md", "command": ["codex", "exec"], "session_command": ["codex"], "schema": ".agent/schemas/coordinator.json", "write_capable": False},
+        {"name": "developer", "instruction": ".agent/roles/developer.md", "command": ["codex", "exec"], "session_command": ["codex"], "schema": ".agent/schemas/developer.json", "write_capable": True},
+        {"name": "reviewer", "instruction": ".agent/roles/reviewer.md", "command": ["codex", "exec"], "session_command": ["codex"], "schema": ".agent/schemas/reviewer.json", "write_capable": False},
     ],
 }
 NEUTRAL_AUTHORITY = "# Current Task Authority\n\nNo Developer task is currently authorized.\n\nBefore running a write-capable cycle, replace this document through the project's explicit approval process with one bounded task, acceptance criteria, validation commands, and stop conditions.\n"
 RUNTIME_IGNORES = (".agent/runtime/", ".agent/orchestrate.lock")
 HUMAN_STOP_CATEGORIES = ("unresolved_requirement", "material_policy_or_provider_decision", "scope_expansion", "failed_or_incomplete_validation", "unsafe_or_unexpected_diff", "remote_or_external_action", "stale_or_mismatched_task_state", "indeterminate_write_invocation")
+ROLE_ALIASES = {"coordinator": "coordinator", "coord": "coordinator", "developer": "developer", "dev": "developer", "reviewer": "reviewer", "review": "reviewer"}
+ROLE_ORDER = ("coordinator", "developer", "reviewer")
+ROLE_PHRASES = {"coordinator_initial": "Start project: <human initial brief>", "developer": "do next prompt", "reviewer": "review latest", "coordinator_review": "coordinate latest"}
+SUPERVISED_PHASES = frozenset(ROLE_PHRASES)
 
 
 class RoleFailure(RuntimeError):
     pass
+
+
+def parse_roles(value: str) -> list[str]:
+    names = [ROLE_ALIASES.get(item.strip().lower()) for item in value.split(",")]
+    if len(names) != 3 or any(name is None for name in names) or len(set(names)) != 3 or names != list(ROLE_ORDER):
+        raise RuntimeError("--roles must be coordinator,developer,reviewer in that order (aliases: coord,dev,review)")
+    return names
+
+
+def tab_spec(root: Path, config: dict, name: str) -> dict:
+    spec = role(config, name); instruction = str(project_path(root, spec["instruction"])); sandbox = "workspace-write" if spec["write_capable"] else "read-only"
+    command = spec.get("session_command")
+    if not isinstance(command, list) or not command or any(not isinstance(item, str) or not item for item in command):
+        raise RuntimeError(f"{name} lacks a configured interactive session command")
+    return {"host": config["tab_host"], "role": name, "title": f"ORCHESTR8 · {name.title()} · waiting for human {'brief' if name == 'coordinator' else ('approved task' if name == 'developer' else 'Developer evidence')}", "cwd": str(root), "instruction": instruction, "command": command, "sandbox": sandbox, "bootstrap": f"Read {instruction}; wait for the documented human phrase; use {sandbox}."}
+
+
+def applescript_text(value: str) -> str:
+    """Return a Unicode-safe AppleScript text expression without JSON escapes."""
+    parts: list[str] = []; literal: list[str] = []
+    def flush() -> None:
+        if literal:
+            parts.append('"' + "".join(literal) + '"'); literal.clear()
+    for char in value:
+        if char == '"': literal.append('\\"')
+        elif char == "\\": literal.append("\\\\")
+        elif ord(char) < 32 or ord(char) == 127:
+            flush(); parts.append(f"character id {ord(char)}")
+        else: literal.append(char)
+    flush()
+    return '""' if not parts else parts[0] if len(parts) == 1 else "(" + " & ".join(parts) + ")"
+
+
+def interactive_session_command(spec: dict) -> str:
+    if spec.get("probe"):
+        return f"cd {shlex.quote(spec['cwd'])}; printf '\\033]0;%s\\007' {shlex.quote(spec['title'])}; printf 'ORCHESTR8 Host probe\\n'; date; printf 'cwd: '; pwd; printf 'shell: %s\\n' \"${{SHELL:-unknown}}\"; \"${{SHELL:-/bin/zsh}}\" --version 2>/dev/null | head -1; printf 'PATH: %s\\n' \"$PATH\"; if command -v codex; then codex --version; printf 'codex --version status: %s\\n' \"$?\"; else printf 'codex: not found\\n'; fi; printf 'No role or workflow was started.\\n'; exec \"${{SHELL:-/bin/zsh}}\" -l"
+    launch = f"{shlex.join(spec['command'])} -C {shlex.quote(spec['cwd'])} -s {shlex.quote(spec['sandbox'])} \"$(cat {shlex.quote(spec['instruction'])})\""
+    return f"cd {shlex.quote(spec['cwd'])}; printf '\\033]0;%s\\007' {shlex.quote(spec['title'])}; {launch}; launch_status=$?; printf '\\nORCHESTR8 role session exited (status %s); inspection shell remains open.\\n' \"$launch_status\" >&2; exec \"${{SHELL:-/bin/zsh}}\" -l"
+
+
+def iterm_tab_applescript(spec: dict) -> str:
+    command = interactive_session_command(spec)
+    return "\n".join((
+        'tell application "iTerm2"',
+        "  if (count of windows) is 0 then error \"iTerm2 has no control window\"",
+        "  set targetWindow to front window",
+        "  tell targetWindow",
+        "    set readinessStartedAt to current date",
+        "    set tabCountBefore to count of tabs",
+        f"    create tab with default profile command {applescript_text(command)}",
+        "    set readinessAttempts to 0",
+        "    repeat 10 times",
+        "      set readinessAttempts to readinessAttempts + 1",
+        "      if (count of tabs) is (tabCountBefore + 1) then exit repeat",
+        "      delay 0.1",
+        "    end repeat",
+        "    set tabCountAfter to count of tabs",
+        "    set readinessElapsedSeconds to ((current date) - readinessStartedAt)",
+        "    if tabCountAfter is not (tabCountBefore + 1) then error \"iTerm2 tab readiness failed pre_count=\" & tabCountBefore & \" final_count=\" & tabCountAfter & \" attempts=\" & readinessAttempts & \" elapsed_seconds=\" & readinessElapsedSeconds & \" reason=unexpected_count; no supervised state, close partial probe tabs, use a fresh target\"",
+        "  end tell",
+        "  return \"pre_count=\" & tabCountBefore & \" final_count=\" & tabCountAfter & \" attempts=\" & readinessAttempts & \" elapsed_seconds=\" & readinessElapsedSeconds & \" reason=confirmed\"",
+        "end tell",
+    ))
+
+
+def launch_iterm_tab(spec: dict, osascript_runner=subprocess.run, platform: str | None = None) -> None:
+    if spec.get("host") != "iterm2": raise RuntimeError("unsupported automatic tab host; configure tab_host as iterm2")
+    if (sys.platform if platform is None else platform) != "darwin": raise RuntimeError("--tabs requires iTerm2 on macOS")
+    script = iterm_tab_applescript(spec)
+    result = osascript_runner(["osascript", "-e", script], text=True, capture_output=True)
+    if result.returncode: raise RuntimeError("iTerm2 tab launch failed before supervised state creation; install/open iTerm2 and rerun from an iTerm2 control tab: " + result.stderr.strip())
+    return result.stdout.strip()
+
+
+def launch_iterm_probe(spec: dict, runner=subprocess.run) -> dict:
+    request = {"title": spec["title"], "mode": "default_profile_tab_only"}
+    result = runner([sys.executable, str(ROOT / ".agent" / "iterm_probe.py")], input=json.dumps(request), text=True, capture_output=True)
+    if result.returncode: raise RuntimeError("native iTerm2 probe failed before supervised state; create an isolated .venv and authorize iTerm2 Python API: " + result.stderr.strip())
+    try: response = json.loads(result.stdout)
+    except json.JSONDecodeError as error: raise RuntimeError("native iTerm2 probe returned malformed diagnostics") from error
+    if not isinstance(response, dict) or response.get("ok") is not True: raise RuntimeError(str(response.get("reason", "native iTerm2 probe failed; close partial tab and use a fresh target")))
+    return response
+
+
+def session_path(current: Path) -> Path: return current / "supervised_session.json"
+def tab_state(current: Path) -> Path: return current / "tabs.json"
+def load_supervised_session(current: Path) -> dict:
+    path = session_path(current)
+    if not path.is_file(): raise RuntimeError("supervised session is missing")
+    try: session = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error: raise RuntimeError("supervised session is malformed") from error
+    phase = session.get("phase") if isinstance(session, dict) else None
+    if not isinstance(session, dict) or not isinstance(phase, str) or phase not in SUPERVISED_PHASES:
+        raise RuntimeError("supervised session has an invalid phase")
+    return session
+def displayed_role(phase: str) -> str:
+    if phase not in SUPERVISED_PHASES: raise RuntimeError("supervised session has an invalid phase")
+    return "coordinator" if phase.startswith("coordinator") else phase
+def next_action(phase: str) -> str: return f"{displayed_role(phase)}: {ROLE_PHRASES[phase]}"
+def print_session(root: Path, config: dict, current: Path, phase: str, title: str) -> None:
+    print(json.dumps({"title": title, "roles": list(ROLE_ORDER), "phase": phase, "next_action": next_action(phase), "task_authority": config["task_authority"], "current": str(current.relative_to(root)), "tab_labels": [tab_spec(root, config, name)["title"] for name in ROLE_ORDER]}, indent=2))
+
+
+def supervised_init(root: Path, config: dict, current: Path, tabs: bool, launcher=launch_iterm_tab, tabs_probe: bool = False) -> None:
+    if not tabs: return
+    if not tabs_probe and launcher is launch_iterm_tab:
+        raise RuntimeError("full --tabs launch is unavailable pending an approved native iTerm2 design; use --tabs --tabs-probe or recover with a fresh target")
+    if tabs_probe:
+        spec = {"host":"iterm2", "probe":True, "role":"host_probe", "title":"ORCHESTR8 · Host probe", "cwd":str(root), "instruction":"", "command":[], "sandbox":"read-only", "bootstrap":"host probe"}
+        probe_launcher = launch_iterm_probe if launcher is launch_iterm_tab else launcher
+        try: observation = probe_launcher(spec)
+        except Exception as error: raise RuntimeError("host probe stopped safely before workflow state creation: " + str(error)) from error
+        print(json.dumps({"title":"host probe", "host":"iterm2", "roles_started":0, "supervised_state_created":False, "readiness":observation or "fake launcher confirmed", "result":"one probe tab requested; inspect its bounded diagnostics"}))
+        return
+    specs = [tab_spec(root, config, name) for name in ROLE_ORDER]
+    try:
+        for spec in specs: launcher(spec)
+    except Exception as error:
+        stop = {"state": "HUMAN_REQUIRED", "category": "failed_or_incomplete_validation", "reason": str(error), "phase": "tab_launch"}
+        raise RuntimeError("tab launch stopped safely before workflow state creation: " + json.dumps(stop, sort_keys=True)) from error
+    current.mkdir(parents=True, exist_ok=True)
+    write_json(tab_state(current), {"roles": specs, "state": "waiting_for_human", "non_authoritative": True})
+    write_json(session_path(current), {"phase": "coordinator_initial", "state": "WAITING_FOR_HUMAN"})
+
+
+def supervised_stop(current: Path, history: Path, state_path: Path, state: dict, session: dict | None, category: str, reason: str) -> int:
+    iteration = state.get("active_iteration", state.get("iteration", 0) + 1)
+    phase = displayed_role(session["phase"]) if session is not None else "coordinator"
+    state.update(active_iteration=iteration, phase=phase, config_sha256=state.get("config_sha256"))
+    if session is not None: write_json(session_path(current), session)
+    return human_stop(current, history, state_path, iteration, state, category, reason)
+
+
+def supervised_accept(root: Path, config: dict, authority: Path, approval_record: Path, current: Path, history: Path, state_path: Path, name: str) -> int:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    try: session = load_supervised_session(current)
+    except RuntimeError as error: return supervised_stop(current, history, state_path, state, None, "stale_or_mismatched_task_state", str(error))
+    phase = session["phase"]
+    if displayed_role(phase) != name:
+        return supervised_stop(current, history, state_path, state, session, "stale_or_mismatched_task_state", "role is not the permitted supervised handoff")
+    output = current / f".{name}.json"
+    try:
+        if not output.is_file(): raise RuntimeError("expected structured role report is missing")
+        result = validate_output(root, config, name, json.loads(output.read_text(encoding="utf-8")))
+        if name == "coordinator":
+            if result["status"] != "CONTINUE" or result.get("next_prompt") not in (None, "", authority.read_text(encoding="utf-8")):
+                raise RuntimeError("coordinator output requires human approval or stop")
+            head, base = clean_baseline(root, runtime_root(current, history, state_path))
+            iteration = state.get("iteration", 0) + 1; state.update(active_iteration=iteration, phase="developer", status="RUNNING", config_sha256=config["_sha256"], baseline={"head": head, "manifest": base})
+            meta = snapshot_authority(root, authority, approval_record, current, config, state)
+            state.update(task_snapshot_sha256=meta["sha256"]); write_json(current / "baseline.json", state.pop("baseline")); session.update(phase="developer", task_snapshot_sha256=meta["sha256"]); write_json(state_path, state)
+        elif name == "developer":
+            validate_snapshot(root, authority, current, config, state)
+            if result["status"] != "DONE": raise RuntimeError("developer report is not DONE")
+            (current / "dev_report.md").write_text(report("Developer report", result), encoding="utf-8"); write_json(current / "after_developer.json", manifest(root, runtime_root(current, history, state_path))); state["phase"] = "reviewer"; session["phase"] = "reviewer"; write_json(state_path, state)
+        else:
+            validate_snapshot(root, authority, current, config, state)
+            if result["verdict"] != "APPROVED": raise RuntimeError("reviewer requires human resolution")
+            (current / "review_report.md").write_text(report("Reviewer report", result), encoding="utf-8"); session["phase"] = "coordinator_review"; session["task_snapshot_sha256"] = state["task_snapshot_sha256"]; write_json(session_path(current), session)
+            state["last_authority_sha256"] = state["task_snapshot_sha256"]; finish(current, history, state_path, state["active_iteration"], state, "READY")
+            print_session(root, config, current, session["phase"], f"accepted {name}"); return 0
+    except (RuntimeError, RoleFailure, json.JSONDecodeError) as error:
+        category = "indeterminate_write_invocation" if name == "developer" else "failed_or_incomplete_validation"
+        return supervised_stop(current, history, state_path, state, session, category, str(error))
+    write_json(session_path(current), session); print_session(root, config, current, session["phase"], f"accepted {name}"); return 0
+
+
+def supervised_cycle(root: Path, config: dict, authority: Path, current: Path, history: Path, state_path: Path) -> int:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    try:
+        session = load_supervised_session(current)
+        phase = session["phase"]
+        if not authority.is_file(): raise RuntimeError("configured durable task authority is missing")
+        if phase in ("developer", "reviewer", "coordinator_review"): validate_snapshot(root, authority, current, config, state if phase != "coordinator_review" else {"task_snapshot_sha256": session.get("task_snapshot_sha256")})
+        if phase == "reviewer" and not (current / "dev_report.md").is_file(): raise RuntimeError("Developer evidence is missing")
+        if phase == "coordinator_review" and not (current / "review_report.md").is_file(): raise RuntimeError("Reviewer evidence is missing")
+        print_session(root, config, current, phase, "cycle"); return 0
+    except (KeyError, RuntimeError) as error:
+        return supervised_stop(current, history, state_path, state, session if "session" in locals() else None, "stale_or_mismatched_task_state", str(error))
+
+
+def supervised_view(root: Path, config: dict, current: Path, history: Path, state_path: Path, title: str) -> int:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    try: session = load_supervised_session(current)
+    except RuntimeError as error:
+        return supervised_stop(current, history, state_path, state, None, "stale_or_mismatched_task_state", str(error))
+    print_session(root, config, current, session["phase"], title); return 0
 
 
 def digest(data: bytes) -> str: return hashlib.sha256(data).hexdigest()
@@ -73,7 +265,7 @@ def preflight_init_destinations(root: Path, destinations: list[Path]) -> None:
                 raise RuntimeError("initialization refuses symlinked destination component: " + str(current.relative_to(root)))
 
 
-def init_project(project_root: str, authority_value: str, init_git: bool) -> int:
+def init_project(project_root: str, authority_value: str, init_git: bool, tabs: bool = False, launcher=launch_iterm_tab, tabs_probe: bool = False) -> int:
     root = Path(project_root).expanduser().resolve()
     if root.exists() and not root.is_dir():
         raise RuntimeError("--project-root must be a directory")
@@ -108,6 +300,9 @@ def init_project(project_root: str, authority_value: str, init_git: bool) -> int
     if missing:
         suffix = "" if not existing or existing.endswith("\n") else "\n"
         ignore.write_text(existing + suffix + "\n".join(missing) + "\n", encoding="utf-8")
+    config, configured_root = load_config(root / ".agent/controller_config.json")
+    _, _, current, _, _ = locations(configured_root, config)
+    supervised_init(configured_root, config, current, tabs, launcher, tabs_probe)
     print("Initialized local controller scaffolding in " + str(root))
     print("Next: configure role commands if needed; authorize a bounded task in " + authority_value + "; create an initial Git commit/HEAD; then run python .agent/orchestrate.py --dry-run.")
     return 0
@@ -115,13 +310,15 @@ def init_project(project_root: str, authority_value: str, init_git: bool) -> int
 
 def load_config(path: Path | None = None) -> tuple[dict, Path]:
     path = path or CONFIG_PATH; raw = path.read_bytes(); config = json.loads(raw)
-    required = {"task_authority", "approval_record", "paths", "roles", "role_timeout_seconds"}
+    required = {"tab_host", "task_authority", "approval_record", "paths", "roles", "role_timeout_seconds"}
     if not isinstance(config, dict) or not required <= set(config): raise RuntimeError("configuration is malformed")
+    if config["tab_host"] != "iterm2": raise RuntimeError("configuration tab_host must be iterm2; no other automatic tab host is supported")
     roles = config["roles"]
     # C1 intentionally supports exactly these semantic roles, with all project assets configurable.
     if not isinstance(roles, list) or [item.get("name") for item in roles] != ["coordinator", "developer", "reviewer"]: raise RuntimeError("C1 supports only coordinator, developer, reviewer role order")
     for item in roles:
         if not all(isinstance(item.get(key), str) and item[key] for key in ("name", "instruction", "schema")) or not isinstance(item.get("command"), list) or not isinstance(item.get("write_capable"), bool): raise RuntimeError("configuration role is malformed")
+        if "session_command" in item and (not isinstance(item["session_command"], list) or not item["session_command"] or any(not isinstance(value, str) or not value for value in item["session_command"])): raise RuntimeError("configuration session command is malformed")
         if item["write_capable"] != (item["name"] == "developer"): raise RuntimeError("only Developer may be write-capable")
     if not all(isinstance(config["paths"].get(key), str) and config["paths"][key] for key in ("current", "history", "state")): raise RuntimeError("configuration paths are malformed")
     config["_sha256"] = digest(raw); return config, path.parent.parent.resolve()
@@ -186,7 +383,7 @@ def archive(current: Path, history: Path, iteration: int, state: dict) -> None:
     target = history / f"{iteration:03d}"
     if target.exists() and any(target.iterdir()): raise RuntimeError(f"iteration {iteration} is already archived; refusing to overwrite history")
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("authoritative_task.md", "task_snapshot.json", "approval_evidence.json", "dev_report.md", "review_report.md", "baseline.json", "after_developer.json", "human_stop.json"):
+    for name in ("authoritative_task.md", "task_snapshot.json", "approval_evidence.json", "dev_report.md", "review_report.md", "baseline.json", "after_developer.json", "human_stop.json", "supervised_session.json", "tabs.json", ".coordinator.json", ".developer.json", ".reviewer.json"):
         if (current / name).is_file(): shutil.copy2(current / name, target / name)
     write_json(target / "state.json", state)
 def finish(current: Path, history: Path, state_path: Path, iteration: int, state: dict, status: str, reason: str | None = None) -> int:
@@ -240,11 +437,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command")
     init = subcommands.add_parser("init", help="create a non-executing project-local controller scaffold")
-    init.add_argument("--project-root", required=True)
-    init.add_argument("--task-authority", required=True)
+    init.add_argument("--project-root", default=".")
+    init.add_argument("--task-authority", default="docs/NEXT_PROMPT.md")
     init.add_argument("--init-git", action="store_true", help="initialize Git when the target is not already a repository; never commits")
+    init.add_argument("--roles", default="coordinator,developer,reviewer")
+    init.add_argument("--tabs", action="store_true", help="open supervised iTerm2 role tabs after successful initialization")
+    init.add_argument("--tabs-probe", action="store_true", help="create one iTerm2 host diagnostic tab; requires --tabs")
+    for command in ("preview", "status", "cycle", "resume"):
+        subcommands.add_parser(command, help=f"show supervised workflow {command}")
+    accept = subcommands.add_parser("accept", help="validate a human-completed role handoff")
+    accept.add_argument("role")
     parser.add_argument("--multi-cycle", action="store_true"); parser.add_argument("--max-iterations", type=int); parser.add_argument("--resume", action="store_true"); parser.add_argument("--dry-run", action="store_true"); args = parser.parse_args()
-    if args.command == "init": return init_project(args.project_root, args.task_authority, args.init_git)
+    if args.command == "init":
+        if args.tabs_probe and not args.tabs: raise RuntimeError("--tabs-probe requires --tabs")
+        parse_roles(args.roles); return init_project(args.project_root, args.task_authority, args.init_git, args.tabs, tabs_probe=args.tabs_probe)
+    if args.command in ("preview", "status", "cycle", "resume", "accept"):
+        config, root = load_config(Path.cwd().resolve() / ".agent/controller_config.json")
+        authority, approval_record, current, history, state_path = locations(root, config)
+        if args.command == "accept":
+            name = ROLE_ALIASES.get(args.role.lower())
+            if name is None: raise RuntimeError("accept requires coordinator, developer, or reviewer")
+            return supervised_accept(root, config, authority, approval_record, current, history, state_path, name)
+        if args.command == "cycle": return supervised_cycle(root, config, authority, current, history, state_path)
+        return supervised_view(root, config, current, history, state_path, args.command)
     if args.max_iterations is not None and not args.multi_cycle: parser.error("--max-iterations requires --multi-cycle")
     config, root = load_config(); authority, approval_record, current, history, state_path = locations(root, config); approval_entries(approval_record); state = json.loads(state_path.read_text())
     if state.get("config_sha256") not in (None, config["_sha256"]): raise RuntimeError("saved state belongs to a different controller configuration")
