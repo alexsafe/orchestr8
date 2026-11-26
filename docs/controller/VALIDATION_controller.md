@@ -1,6 +1,129 @@
 # Controller Workflow — Validation
 
+## Human app-sent single-cycle proof — PASSED (2026-11-15)
+
+Evidence: human-pasted command outputs and role transcripts, not an independent filesystem audit. Target `/private/tmp/orchestr8-cycle-6m6wfC`; logs `/private/tmp/orchestr8-cycle-logs-CEXYTT`; iteration 001. Task SHA-256 `f5f531cbeb6b8433eee95a38b397ae6484503e88311a4f1c5ceba7521059f0a2`.
+
+- Coordinator start succeeded, exit 0. Developer trigger succeeded, exit 0; Developer reported creation and validation of the 27-byte marker and owned report.
+- Reviewer trigger succeeded, exit 0. Human explicitly observed review without manual prompt or Enter. Reviewer returned APPROVED, no findings, with independent byte/scope checks.
+- Original Coordinator received the app-sent `coordinate latest` context and produced the separate final summary. Summary references published Developer/Reviewer reports, approved review and no next task.
+- Final status succeeded, exit 0: COMPLETED_COORDINATOR_REVIEW, all three roles started, trigger output present. Final Git status showed only `?? SMOKE_MARKER.txt`.
+- Final trigger/acceptance command logs were not pasted individually; the supplied final status, trigger text and Coordinator transcript establish progression to final coordination. The transcript includes a compound read command exiting 1; its exact failing component is unknown. Subsequent summary writing succeeded; do not describe every role command as passing.
+- Final status explicitly labels the summary `present_unvalidated`. This record establishes observed single-cycle communication, not independent semantic validation of that summary, an archive rehash, absence of every prohibited historical action, or unattended/multiple-cycle behavior.
+
+Result: the human-gated single-cycle app-sent communication proof passed on the supplied evidence. Preserve target/logs and prior failed attempts. This does not establish universal timing reliability. Earlier focused submission evidence is `/private/tmp/orchestr8-delay-is4vo5ro/result.json`, with an observed exact-marker response after the one-second settling interval.
+
+
+## Human single-cycle communication proof — PASSED
+
+Evidence source: the human's pasted CLI outputs and role responses in this coordination conversation; no independent filesystem inspection of the smoke target was performed for this record. Target: `/private/tmp/orchestr8-mvp-LCIjPe`, iteration `001`.
+
+- Coordinator returned CONTINUE and reported its owned artifact written. Control acceptance returned success/exit 0 with `next_action: launch developer`.
+- Developer launch returned success/exit 0 and native window/tab/session identifiers. Its tab received configured snapshot/report paths and waited for `do next prompt`.
+- Developer reported DONE, marker creation and exact 27-byte validation including newline. Control acceptance returned success/exit 0 with `next_action: launch reviewer`.
+- Reviewer reported APPROVED with no findings, independent byte/scope verification and matching Developer/report identity. Control acceptance returned success/exit 0, all three roles started, `phase: coordinator_review`, and history path `/private/tmp/orchestr8-mvp-LCIjPe/.agent/runtime/history/001`. The separate Reviewer launch output was not pasted; the completed review and acceptance establish that the workflow reached Reviewer.
+- Final control status returned `state: COMPLETED_COORDINATOR_REVIEW`, all three roles started, and `next_action: inspect coordinator summary; no new cycle is authorized`.
+- The pasted `coordinator_summary.md` records iteration 001 completion, task snapshot SHA-256 `098b28ed7951e9c275d8a39a23312bd63f304f774f3e740dd743d8fb77172168`, the published Developer/Reviewer reports and APPROVED verdict, with no next task proposed. Coordinator also returned COMPLETE in its conversation.
+- Final `git status --short` printed only `?? SMOKE_MARKER.txt`. Runtime artifacts are ignored; this output alone is not a full runtime-integrity audit. Controller reported the archive; this record does not independently rehash it.
+
+Result: the fresh manually gated single-cycle communication proof passed. Actual Coordinator/Developer/Reviewer report production, controller acceptance, Markdown handoffs and final Coordinator summary were observed. No manual JSON copying or permission bypass was reported. Preserve the target as evidence; do not restart or clean it merely to continue development.
+
+Not established: controller-sent conversational triggers, unattended progression, repeated cycles, exhaustive sensitive-action approval policy, or hostile-agent isolation. Next is a bounded one-cycle app-sent-trigger task, followed by its own independent review and live proof. Historical validation blocks below describe their original evidence and limitations, not current milestone status.
+
+
+## MVP report-writing correction — Developer validation
+
+- `python -m unittest tests.test_orchestrator_safety`: exit 0; 73 deterministic tests passed.
+- `python -m unittest`: exit 0; 0 tests discovered; not coverage.
+- `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py`: exit 0.
+- `git diff --check`: exit 0.
+- `python .agent/orchestrate.py start --help` and `python .agent/orchestrate.py launch --help`: each exit 0.
+
+Fake role and native-bridge tests cover production workspace-write payloads, Developer-only code authority, protected project/runtime evidence, an aggregate fingerprint of manifest-excluded paths, published Markdown handoffs and a separate final Coordinator summary. The checks detect unexpected changes at handoffs; they do not provide hostile-agent isolation or rollback. No real role ran. Independent review and a human single-cycle smoke gate remain required.
+
+
+## C1.2.19 Developer validation — manual maintenance
+
+- `python -m unittest tests.test_orchestrator_safety`: exit 0; 70 deterministic tests passed.
+- `python -m unittest`: exit 0; 0 tests discovered; this is not coverage.
+- `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py`: exit 0.
+- `git diff --check`: exit 0.
+- `python .agent/orchestrate.py start --help`: exit 0.
+- `python .agent/orchestrate.py launch --help`: exit 0.
+
+The suite exercises the explicit staged cycle with fake delivery, recorded-window bridge behavior, role capability settings, baseline and review-diff drift, refusal and stop paths, and exactly-once archive. Independent review and a human full-cycle smoke gate remain required. Reviewer is read-only; its ability to write the owned report has not been demonstrated in a live sandbox.
+
+
+## C1.2.18 human Coordinator smoke — acceptance passed; status discrepancy
+
+The human explicitly chose to proceed before the remaining Developer-chat-report review gate closed. These observations do not change the independent review verdict.
+
+Target: `/private/tmp/orchestr8-c1218-QudVrf`. Initialization succeeded. The human supplied a Coordinator-only durable task and started the smoke workflow. The visible Coordinator read its instructions, waited for the brief, and subsequently reported `CONTINUE` with null proposal/human fields and stated that it wrote its artifact.
+
+The pasted control-terminal output confirms `accept coordinator` returned `outcome: success`, exit `0`, and `Developer/Reviewer staged launch is not implemented; no additional role was launched`, with next action `await a separately authorized next stage`.
+
+The following `status` returned `outcome: success` and `phase: coordinator_initial`, but incorrectly repeated `coordinator: Start project: <human initial brief>`. It also listed all configured role labels; this is not evidence of Developer/Reviewer tabs being launched. Record this as an observed post-acceptance status/next-action discrepancy for correction and deterministic regression. Do not follow that stale brief cue.
+
+The pre-brief not-ready/exit-2 check was requested, but its output was not supplied; do not claim that case passed in the human smoke. No full supervised cycle was performed. Preserve this target and its evidence. Next coordination work is a bounded C1.2.19 staged-launch proposal including accurate post-acceptance status; the final C1.2.18 reporting verdict remains separate.
+
+## C1.2.18 Developer validation — manual maintenance
+
+- `python -m unittest tests.test_orchestrator_safety`: exit 0; 59 deterministic tests passed.
+- `python -m unittest`: exit 0; 0 tests discovered; this is not coverage.
+- `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py`: exit 0.
+- `git diff --check`: exit 0.
+- `python .agent/orchestrate.py start --help`: exit 0.
+
+The explicit test module includes isolated CLI state refusals, fake Coordinator delivery, refusal and terminal persistence checks. No source runtime, actual iTerm2 or Codex role was used. Independent review remains required, followed by a human Coordinator smoke gate; Developer/Reviewer staged launching remains deferred.
+
+
 Historical C1.2.1–C1.2.5 records below retain the superseded Terminal.app investigation for auditability only. C1.2.6 makes iTerm2 the sole supported automatic-tab host.
+
+## C1.2.16.2 missing-report not-ready developer evidence
+
+`python -m unittest tests.test_orchestrator_safety` — exit `0`; `Ran 50 tests in 4.763s`; `OK`. The active Coordinator missing-report regression returns structured nonzero not-ready output without mutating session, tabs, state, or history; a later valid report follows the normal staged path. Malformed output remains a visible nonzero terminal stop, while prior terminal/repeat-accept coverage remains intact.
+
+`python -m unittest` — exit `0`; `Ran 0 tests`; `OK`. `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py`, `git diff --check`, and `python .agent/orchestrate.py start --help` — exit `0`. `python .agent/orchestrate.py --dry-run` — exit `2`, fail-closed with `saved state belongs to a different controller configuration`; no host or role launched.
+
+## C1.2.16.1 terminal Coordinator-stop developer evidence
+
+`python -m unittest tests.test_orchestrator_safety` — exit `0`; `Ran 49 tests in 4.559s`; `OK`. The deterministic regression starts the staged Coordinator, supplies schema-valid `HUMAN_REQUIRED`/`scope_expansion`, asserts a first nonzero structured terminal acceptance, terminal-first status without a role phrase, archived-once immutable evidence, removed current session/tab state, and a repeat acceptance that leaves history, state, and current evidence unchanged. Existing normal staged Coordinator acceptance remains covered.
+
+`python -m unittest` — exit `0`; `Ran 0 tests`; `OK`. `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py`, `git diff --check`, and `python .agent/orchestrate.py start --help` — exit `0`. `python .agent/orchestrate.py --dry-run` — exit `2`, fail-closed with `saved state belongs to a different controller configuration`; no host or role launched.
+
+No iTerm2, Codex, dependency installation, network, or human rerun occurred. The observed C1.2.16 smoke target/history is preserved as evidence; independent review is required before further human work.
+
+## C1.2.16 staged Coordinator-first start developer evidence
+
+`python -m unittest tests.test_orchestrator_safety` — exit `0`; `Ran 48 tests in 4.517s`; `OK`. Deterministic fake-native/controller coverage verifies clean Coordinator-only start, immutable snapshot/session consistency before delivery, native ID recording only after delivery, no Developer/Reviewer specification, staged Coordinator acceptance without later launch, dirty/HEAD-less/missing-authority refusal, native app/window/tab/title/session/send failure recovery, launch-failure archival without an active tab claim, held-lock refusal before all mutation/launch, lock release for safe retry, outer malformed/failed/incomplete delivery containment, and retained probe/full-tabs-fail-closed coverage.
+
+`python -m unittest` — exit `0`; `Ran 0 tests`; `OK`. `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py` and `git diff --check` — exit `0`. `python .agent/orchestrate.py start --help` — exit `0`, documents the required `--tabs` flag. `python .agent/orchestrate.py --dry-run` — exit `2`, fail-closed with `saved state belongs to a different controller configuration`; no host or role launched.
+
+No dependency installation, network, iTerm2, Codex, role, or human C1.2.16 gate ran. After independent review, Alex uses an activated Orchestr8 `.venv` and fresh `/private/tmp` target, establishes a bounded authority and clean baseline, runs `orchestr8 start --tabs`, confirms one Coordinator tab, sends the human brief, and uses the control terminal only to inspect/accept Coordinator output. Developer/Reviewer launch remains unimplemented.
+
+## C1.2.15 Coordinator Codex bootstrap probe developer evidence
+
+`python -m unittest tests.test_orchestrator_safety` — exit `0`; `Ran 41 tests in 4.367s`; `OK`. Fake iTerm2 API/stdio bridge execution proves one no-argument default-profile tab creation, the exact Coordinator bootstrap title, one session retrieval, and exactly one shell-quoted `codex -C <project-root> -s read-only` command with one newline. It covers malformed bootstrap requests; `None` and exception failures for app discovery, active-window discovery, tab, title, session, and command delivery; outer malformed/failed/incomplete response containment; exclusive CLI modes; no-state containment; retained one-tab/layout probes; and full-tabs fail-closed behavior.
+
+`python -m unittest` — exit `0`; `Ran 0 tests`; `OK`. `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py` and `git diff --check` — exit `0`. `python .agent/orchestrate.py init --help` — exit `0`, lists `--tabs-coordinator-bootstrap-probe`. `python .agent/orchestrate.py --dry-run` — exit `2`, fail-closed with `saved state belongs to a different controller configuration`; no host or role launched.
+
+No dependency installation, network, iTerm2, Codex, role, or manual bootstrap probe ran. After independent review, Alex runs only this probe from an activated Orchestr8 `.venv` in a fresh `/private/tmp` target and visually confirms the Coordinator Codex UI. Bootstrap delivery is unverified controller output, not a supervised session: Alex must not send `Start project: <human initial brief>` and no Developer/Reviewer tab or workflow follows.
+
+## C1.2.14 native three-tab layout probe developer evidence
+
+`python -m unittest tests.test_orchestrator_safety` — exit `0`; `Ran 39 tests in 4.238s`; `OK`. The bridge executes under fake iTerm2 API objects and fake stdio, asserting three ordered no-argument default-profile tab creations and exact native titles. It covers `None` and exception failures at every creation step, title failure at every title step, malformed layout requests, outer process malformed/failed/incomplete response containment, one-tab retention, full-tabs fail-closed behavior, and no supervised state.
+
+`python -m unittest` — exit `0`; `Ran 0 tests`; `OK`. `python -m py_compile .agent/orchestrate.py .agent/iterm_probe.py orchestr8.py` and `git diff --check` — exit `0`. `python .agent/orchestrate.py init --help` — exit `0`, documents `--tabs-layout-probe` and its `--tabs` requirement. `python .agent/orchestrate.py --dry-run` — exit `2`, fail-closed with `saved state belongs to a different controller configuration`; no host or role launched.
+
+No dependency installation, network, iTerm2, Codex, role, or manual layout probe ran. After independent review, Alex runs the layout probe from an activated Orchestr8 `.venv` in a fresh `/private/tmp` target.
+
+## C1.2.14 human layout gate
+
+On 2026-10-29, Alex ran `orchestr8 init --init-git --roles coordinator,developer,reviewer --tabs --tabs-layout-probe` from an activated Orchestr8 `.venv`. The control JSON reported `result: confirmed`, window `pty-56B80AE7-C477-4617-B9AF-3DF0F7F7C709`, tab IDs `14`, `15`, and `16`, and `elapsed_seconds: 0.216`. Alex visibly confirmed all three titled tabs appeared. No Codex role was started. The test target was `/Users/a_cap/work/Ainda/smoke`, which inherits a parent Git worktree and is not suitable for a later clean-baseline/workflow smoke; the host-layout observation remains valid.
+
+## C1.2.15 human Coordinator bootstrap gate
+
+On 2026-10-29, Alex ran `orchestr8 init --init-git --roles coordinator,developer,reviewer --tabs --tabs-coordinator-bootstrap-probe` from an activated Orchestr8 `.venv`. The control JSON reported `unverified_bootstrap_delivered`, window `pty-56B80AE7-C477-4617-B9AF-3DF0F7F7C709`, tab `17`, session `E72CE81E-0132-4AB9-A632-4890580F8A80`, and `elapsed_seconds: 0.075`. The new tab displayed interactive Codex v0.163.0 in `/Users/a_cap/work/Ainda/smoke`, read `.agent/roles/coordinator.md`, and waited for `Start project: <human initial brief>`. Alex sent no task message and no role artifact was written. This remains host/bootstrap evidence only because the target inherits a parent Git worktree.
 
 ## C1.2.13 native one-tab human gate
 
@@ -227,3 +350,11 @@ Independent review remains pending.
 The controller tests use temporary roots and a deterministic local fake executable. They do not invoke Codex, network services, secrets, or live-provider checks. Coverage includes a real clean temporary-Git full cycle whose configured runtime artifacts are excluded from the user-work baseline; real dirty-Git refusal; fixed role-order rejection; default one-cycle and explicit multi-cycle execution; custom current/history/state and role-asset locations; immutable Developer/Reviewer snapshots; persisted role exit, timeout, missing-output, malformed-JSON, missing-contract, extra-field contract, and malformed-checkpoint stops; hash-bound approval evidence; configuration rejection for non-boolean or non-Developer write capability; read-only Reviewer dispatch; coordinator/developer/reviewer resume and stale-state paths; all secret exclusions in current/history manifests; locks; and immutable history.
 
 Independent review recorded `READY WITH NON-BLOCKING CORRECTIONS` after rerunning the controller suite (`14 tests`), full suite (`61 tests`), `git diff --check`, and controller dry-run. The sole non-blocking README runtime-state path correction is applied; see `REVIEW_REPORT_controller.md`.
+
+## Two human-gated tasks in persistent tabs — live proof passed
+
+The operator ran the live test in `/private/tmp/orchestr8-two-cycle.t40d4X`. Coordinator inspected the saved evidence read-only. Archives 001, 002 and 003 contain the Developer report, Reviewer report and task snapshot. Task 1 received CHANGES_REQUIRED and passed on its approved second attempt. Task 2 passed on its first attempt. Both rollover approval hashes match the archived successor snapshots.
+
+Nine confirmed role triggers used the same three session IDs throughout. Task 2 changed only receipt.txt relative to its attempt baseline. Final bytes were `hello\nready\n` and `verified\n`. Git HEAD remained at the initial baseline, 9bb74a26ae235b7223fb051a3253c658e91d21f7.
+
+Final status showed task 2 of 2, APPROVED, a Coordinator summary and no pending proposal. The operator's extra rollover command refused because there was no proposal. No fourth attempt or additional send was recorded. The explicit exhausted-budget refusal with a third proposal is covered by the deterministic suite. This proof covers human-gated operation.
