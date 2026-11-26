@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "decisions": {
+    "CHANGES_REQUIRED": "correction",
+    "APPROVED": "next_task",
+    "completion_or_exhausted_budget": "stop",
+    "unsafe_or_ambiguous_evidence": "stop"
+  }
+}
